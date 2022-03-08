@@ -70,9 +70,10 @@ def manhattan_distance(position_1, position_2):
 
 class CreateDistanceEvaluator(object): # pylint: disable=too-few-public-methods
     """Creates callback to return distance between points."""
-    def __init__(self, data):
+    def __init__(self, data, index_manager):
         """Initializes the distance matrix."""
         self._distances = {}
+        self._index_manager = index_manager
 
         # precompute distance between location to have distance callback in O(1)
         for from_node in range(data.num_locations):
@@ -88,17 +89,22 @@ class CreateDistanceEvaluator(object): # pylint: disable=too-few-public-methods
                         )
                     )
 
-    def distance_evaluator(self, from_node, to_node):
+    def IndexToNode(self, node_index):
+        return self._index_manager.IndexToNode(node_index)
+
+    def distance_evaluator(self, from_node_index, to_node_index):
         """Returns the manhattan distance between the two nodes"""
+        from_node = self.IndexToNode(from_node_index)
+        to_node = self.IndexToNode(to_node_index)
         return self._distances[from_node][to_node]
 
 
 # add additional constraint
-def add_distance_dimension(routing, distance_evaluator, maximum_distance=3000):
+def add_distance_dimension(routing, distance_evaluator_index, maximum_distance=3000):
     """Add Global Span constraint"""
     distance = "Distance"
     routing.AddDimension(
-        distance_evaluator,
+        distance_evaluator_index,
         0,                      # null slack
         maximum_distance,       # maximum distance per vehicle
         True,                   # start cumul to zero
@@ -112,11 +118,12 @@ def add_distance_dimension(routing, distance_evaluator, maximum_distance=3000):
 
 class ConsolePrinter():
     """Print solution to console"""
-    def __init__(self, data, routing, assignment):
+    def __init__(self, data, routing, assignment, index_manager):
         """Initialize the printer"""
         self._data = data
         self._routing = routing
         self._assignment = assignment
+        self._index_manager = index_manager
 
 
     @property
@@ -135,6 +142,9 @@ class ConsolePrinter():
         return self._assignment
 
 
+    def IndexToNode(self, index):
+        return self._index_manager.IndexToNode(index)
+
     def print(self, silent=False):
         """Prints assignment on console"""
         # Inspect solution.
@@ -146,8 +156,8 @@ class ConsolePrinter():
             route_dist = 0
 
             while not self.routing.IsEnd(index):
-                node_index = self.routing.IndexToNode(index)
-                next_node_index = self.routing.IndexToNode(
+                node_index = self.IndexToNode(index)
+                next_node_index = self.IndexToNode(
                     self.assignment.Value(self.routing.NextVar(index))
                 )
                 route_dist += manhattan_distance(
@@ -157,7 +167,7 @@ class ConsolePrinter():
                 plan_output += f' {node_index} -> '
                 index = self.assignment.Value(self.routing.NextVar(index))
 
-            node_index = self.routing.IndexToNode(index)
+            node_index = self.IndexToNode(index)
             total_dist += route_dist
             plan_output += f' {node_index}\n'
             plan_output += f'Distance of the route {vehicle_id}: {route_dist}\n'
@@ -174,25 +184,28 @@ class ConsolePrinter():
 def solve(with_max_distance_per_vehicle_constraint=False, maximum_distance=3000, silent=False):
     data = DataProblem()
 
+    # Create a RoutingIndexManager
+    routing_index_manager = pywrapcp.RoutingIndexManager(data.num_locations, data.num_vehicles, data.depot)
     # Create Routing Model
-    routing = pywrapcp.RoutingModel(data.num_locations, data.num_vehicles, data.depot)
+    routing = pywrapcp.RoutingModel(routing_index_manager)
 
     # Define weight of each edge
-    distance_evaluator = CreateDistanceEvaluator(data).distance_evaluator
-    routing.SetArcCostEvaluatorOfAllVehicles(distance_evaluator)
+    distance_evaluator = CreateDistanceEvaluator(data, routing_index_manager).distance_evaluator
+    distance_evaluator_index = routing.RegisterTransitCallback(distance_evaluator)
+    routing.SetArcCostEvaluatorOfAllVehicles(distance_evaluator_index)
 
     if with_max_distance_per_vehicle_constraint:
-        add_distance_dimension(routing, distance_evaluator, maximum_distance)
+        add_distance_dimension(routing, distance_evaluator_index, maximum_distance)
 
     #Setting first solution heuristic (cheapest addition).
-    search_parameters = pywrapcp.RoutingModel.DefaultSearchParameters()
+    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = (
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     )
 
     # solve the the problem.
     assignment = routing.SolveWithParameters(search_parameters)
-    printer = ConsolePrinter(data, routing, assignment)
+    printer = ConsolePrinter(data, routing, assignment, routing_index_manager)
     return printer.print(silent)
 
 
